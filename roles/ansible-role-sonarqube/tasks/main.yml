@@ -1,0 +1,130 @@
+---
+# tasks file for ansible-role-sonarqube/
+
+- name: "Create SonarQube system group"
+  group:
+    name: "{{ sonar_group }}"
+    state: present
+
+- name: "Create SonarQube system user"
+  user:
+    name: "{{ sonar_user }}"
+    group: "{{ sonar_group }}"
+    createhome: no
+    shell: "/sbin/nologin"
+    comment: "SonarQube System user"
+    state: present
+
+- name: "Create SonarQube directories"
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ sonar_user }}"
+    group: "{{ sonar_group }}"
+    mode: "u=rwx,g=rx,o="
+  with_items:
+    - "{{ sonar_install_directory }}"
+    - "{{ sonar_logs_dir }}"
+    - "{{ sonar_data_dir }}"
+    - "{{ sonar_temp_dir }}"
+
+- name: Create a JAVA_HOME directory
+  become: yes
+  become_user: root
+  tags: app
+  file:
+    dest: "{{java_home}}"
+    mode: 0755
+    state: directory
+
+- name : Copy the JDK files to JAVA_HOME
+  become: yes
+  tags: app,cpbinaries
+  copy:
+    src: "{{ item }}"
+    dest: "{{ java_home }}"
+    mode: 0755
+  with_items:
+    - "{{ jdk_binary_tarfile }}"
+  
+
+- name: Install java
+  become: yes
+#  become_user: "{{ userid }}"
+  tags: javainstall
+  shell: "tar xvfz {{ java_home }}/{{ jdk_binary_tarfile }}"
+  args:
+    chdir: "{{ java_home }}"
+  register: javainstall
+
+
+- name: Crate a Symbolic link to java
+  become: yes
+  file:
+    src: "{{java_home}}/{{ javainstall.stdout_lines[0] }}/bin/java"
+    dest: /usr/bin/java
+    owner: root
+    group: root
+    state: link
+  when: "javainstall.stdout_lines[0] is defined"
+
+- name : Validate Java
+  become: yes
+ # become_user: "{{ userid }}"
+  tags: app,vjava
+  command: "java -version"
+  register: javaver
+
+- name: Update Java Security Random
+  become: yes
+  tags: javarandom
+  lineinfile:
+      path: "{{java_home}}/jdk1.8.0_191/jre/lib/security/java.security"
+      regexp: "securerandom.source=file:/dev/random"
+      line: "securerandom.source=file:/tmp/big.random.file"
+      state: "present"
+      backup: yes
+  register: javarandom
+
+
+- debug:
+    msg: " Java Version Found {{ javaver.stderr }}"
+
+- name: "Ensure JAVA is installed"
+  command: "java -version"
+  register: prereq_java
+  changed_when: false
+
+- name: "Fail if JAVA is not available"
+  fail:
+    msg: "JAVA is not installed or configured"
+  when: not prereq_java.rc == 0
+
+- name: "Execute Debian specific tasks"
+  include_tasks: setup_debian.yml
+  when: ansible_os_family == 'Debian'
+
+- include_tasks: setup_prepare.yml
+
+- include_tasks: setup_sonarqube.yml
+
+- include_tasks: setup_plugin.yml
+  with_items: "{{ sonar_plugins }}"
+  loop_control:
+    loop_var: "sonar_cplugin"
+
+- meta: flush_handlers
+
+- name: "Ensure target version matches"
+  uri:
+    url: "http://{{ sonar_web_host }}:{{ sonar_web_port }}{{ sonar_web_context }}/api/server/version"
+    method: GET
+    return_content: yes
+  register: api_check_version
+  until: api_check_version.status == 200
+  retries: 60
+  delay: 5
+  check_mode: no # uri module not support check mode (at least in Ansible 2.10)
+  changed_when: sonar_version | string not in api_check_version.content
+  notify: fail if expected sonar version not confirmed
+  ignore_errors: "{{ ansible_check_mode }}"
