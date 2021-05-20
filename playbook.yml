@@ -1,0 +1,8 @@
+---
+- name: Sonarqube infrastructure build
+  hosts: app
+  become: true
+  vars_files: 
+    - infra.yml
+  roles:
+    - role: ansible-role-sonarqube

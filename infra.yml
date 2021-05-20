@@ -1,0 +1,5 @@
+#Files to copy
+jdk_binary_tarfile: server-jre-8u191-linux-x64.tar.gz
+
+#Path
+java_home: "/opt"
